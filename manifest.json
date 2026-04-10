@@ -1,0 +1,21 @@
+{
+    "name": "صحيح - الأحاديث النبوية",
+    "short_name": "صحيح",
+    "description": "تعلم الأحاديث النبوية الصحيحة من الكتب الستة",
+    "start_url": "/index.html",
+    "display": "standalone",
+    "background_color": "#f5f3ef",
+    "theme_color": "#1a5f4a",
+    "orientation": "portrait",
+    "icons": [
+        {
+            "src": "icon.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "any"
+        }
+    ],
+    "categories": ["education", "religion"],
+    "lang": "ar",
+    "dir": "rtl"
+}
