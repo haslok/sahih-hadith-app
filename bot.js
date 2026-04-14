@@ -5,7 +5,7 @@ import axios from 'axios';
 dotenv.config();
 
 const token = process.env.BOT_TOKEN;
-const DEVELOPER_ID = 8236813471;
+const DEVELOPER_ID = process.env.DEVELOPER_ID;
 
 // ========== إعدادات القنوات ==========
 // أضف معرفات القنوات هنا (يمكنك إضافة عدة قنوات)
@@ -462,7 +462,7 @@ setInterval(async () => {
   } catch (err) {
     console.error('❌ خطأ في البث:', err.message);
   }
-}, 3 * 60 * 60 * 1000); // كل 3 ساعات
+}, 3 * 1000); // كل 3 ساعات
 
 // ========== معالجة الأخطاء ==========
 bot.on('polling_error', (error) => {
