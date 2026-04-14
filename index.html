@@ -654,7 +654,8 @@
         </div>
 
         <div class="books-scroll" id="booksList">
-            <div class="book-chip active" onclick="selectBook(1, this)">الأربعون النووية</div>
+            <div class="book-chip active" onclick="loadPeriodicHadithUI(this)">حديث الـ 5 ساعات</div>
+            <div class="book-chip" onclick="selectBook(1, this)">الأربعون النووية</div>
             <div class="book-chip" onclick="selectBook(2, this)">صحيح البخاري</div>
             <div class="book-chip" onclick="selectBook(3, this)">صحيح مسلم</div>
             <div class="book-chip" onclick="selectBook(4, this)">سنن الترمذي</div>
@@ -726,19 +727,13 @@
             { id: 5, hadeeth: "المسلم من سلم الناس من لسانه ويده", narrator: "أبي هريرة", reference: "صحيح البخاري", grade: "صحيح", explanation: "المسلم آمن على الناس." }
         ];
 
-        const bookNames = {
-            1: 'الأربعون النووية',
-            2: 'صحيح البخاري',
-            3: 'صحيح مسلم',
-            4: 'سنن الترمذي',
-            5: 'سنن النسائي',
-            6: 'سنن ابن ماجه',
-            7: 'سنن أبي داود'
-        };
-
         function init() {
             updateFavoritesList();
-            fetchCategories().then(() => loadRandomHadith());
+            fetchCategories().then(() => loadPeriodicHadith());
+            
+            // Re-select first chip visually on load
+            document.querySelectorAll('.book-chip').forEach(c => c.classList.remove('active'));
+            document.querySelectorAll('.book-chip')[0].classList.add('active');
         }
 
         async function fetchCategories() {
@@ -794,7 +789,41 @@
             return foundInBooks;
         }
 
+        let isPeriodicMode = true;
+
+        async function loadPeriodicHadithUI(element) {
+            isPeriodicMode = true;
+            document.querySelectorAll('.book-chip').forEach(chip => chip.classList.remove('active'));
+            if(element) element.classList.add('active');
+            
+            await loadPeriodicHadith();
+        }
+
+        async function loadPeriodicHadith() {
+            showLoading();
+            foundInBooks = [];
+            currentBookId = 0; // 0 for periodic generic
+            try {
+                const response = await fetch('/api/periodic');
+                if (!response.ok) throw new Error('API Error');
+                
+                const hadithDetail = await response.json();
+                displayHadith(hadithDetail);
+            } catch (error) {
+                console.log('API failed, using fallback');
+                loadFallback();
+            }
+        }
+
         async function loadRandomHadith() {
+            if (isPeriodicMode) {
+                // If the user clicks "Next" while on Periodic Hadith, switch them to general radnom
+                isPeriodicMode = false;
+                currentBookId = 1;
+                document.querySelectorAll('.book-chip').forEach(chip => chip.classList.remove('active'));
+                document.querySelectorAll('.book-chip')[1].classList.add('active'); // select nawawi
+            }
+            
             showLoading();
             foundInBooks = [];
             
@@ -827,10 +856,6 @@
             }
         }
 
-        function getBookApiId(bookId) {
-            const map = { 2: 'bukhari', 3: 'muslim', 4: 'tirmizi', 5: 'nasai', 6: 'ibnmajah', 7: 'dawud' };
-            return map[bookId];
-        }
 
         function loadFallback() {
             const randomIndex = Math.floor(Math.random() * fallbackHadiths.length);
@@ -943,6 +968,7 @@
         }
 
         function selectBook(bookId, element) {
+            isPeriodicMode = false;
             currentBookId = bookId;
             
             document.querySelectorAll('.book-chip').forEach(chip => chip.classList.remove('active'));

@@ -1,0 +1,23 @@
+{
+  "name": "hadis_pro",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "",
+  "main": "test444.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon bot.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.15.0",
+    "cheerio": "^1.2.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "https": "^1.0.0",
+    "node-telegram-bot-api": "^0.67.0",
+    "nodemon": "^3.1.14"
+  }
+}
