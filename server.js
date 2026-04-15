@@ -221,7 +221,10 @@ setInterval(updatePeriodicHadith, 5 * 60 * 60 * 1000);
 // وتحديث فوري عند بداية تشغيل الخادم بقليل
 setTimeout(updatePeriodicHadith, 2000);
 
-app.get('/api/periodic', (req, res) => {
+app.get('/api/periodic', async (req, res) => {
+    if (!periodicHadith) {
+        await updatePeriodicHadith();
+    }
     if (periodicHadith) {
         res.json(periodicHadith);
     } else {
@@ -229,12 +232,16 @@ app.get('/api/periodic', (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(PORT, () => {
+        console.log(`
 ╔══════════════════════════════════════════╗
 ║                                          ║
 ║   🚀 الخادم يعمل على http://localhost:${PORT}   ║
 ║                                          ║
 ╚══════════════════════════════════════════╝
-    `);
-});
+        `);
+    });
+}
+
+export default app;

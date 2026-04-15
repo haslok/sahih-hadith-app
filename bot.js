@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import axios from 'axios';
 
 dotenv.config();
-
+const API_URL = 'https://sahih-hadith-app.vercel.app';
 const token = process.env.BOT_TOKEN;
 const DEVELOPER_ID = 8236813471;
 
@@ -96,7 +96,7 @@ async function sendToChannel(channelId, message, options = {}) {
  */
 async function sendHadithToChannel(channelId, isPeriodic = false) {
   try {
-    const endpoint = isPeriodic ? 'http://localhost:3000/api/periodic' : 'http://localhost:3000/api/random';
+    const endpoint = isPeriodic ? API_URL + '/api/periodic' : API_URL + '/api/random';
     const response = await axios.get(endpoint);
     
     const prefix = isPeriodic ? '📣 *تذكير بحديث الفترة!*\n\n' : '🌟 *حديث اليوم* 🌟\n\n';
@@ -213,7 +213,7 @@ bot.onText(/\/start/, async (msg) => {
       inline_keyboard: [
         [{ text: '📖 حديث عشوائي', callback_data: 'get_random_hadith' }],
         [{ text: '♻️ حديث الفترة', callback_data: 'get_periodic_hadith' }],
-        [{ text: '📢 قناة البوت', url: 'https://t.me/your_channel_username' }], // رابط قناتك
+        [{ text: '📢 قناة البوت', url: 'https://t.me/ta_w_hid_11' }], 
         [{ text: 'ℹ️ معلومات', callback_data: 'get_info' }],
         [{ text: '📞 تواصل', callback_data: 'get_contact' }],
         [{ text: '❌ إغلاق', callback_data: 'close_keyboard' }]
@@ -332,7 +332,7 @@ bot.on('callback_query', async (callbackQuery) => {
   if (data === 'get_another_hadith' || data === 'get_random_hadith') {
     try {
       const waitMsg = await bot.sendMessage(chatId, '🔄 جاري جلب حديث...');
-      const response = await axios.get('http://localhost:3000/api/random');
+      const response = await axios.get(API_URL + '/api/random');
       const msgBlock = formatHadithMsg(response.data);
       const options = {
         parse_mode: 'Markdown',
@@ -348,7 +348,7 @@ bot.on('callback_query', async (callbackQuery) => {
   } else if (data === 'get_periodic_hadith') {
     try {
       const waitMsg = await bot.sendMessage(chatId, '🔄 جاري جلب حديث الفترة...');
-      const response = await axios.get('http://localhost:3000/api/periodic');
+      const response = await axios.get(API_URL + '/api/periodic');
       const msgBlock = `📣 *تذكير بحديث الفترة!*\n\n` + formatHadithMsg(response.data);
       const options = {
         parse_mode: 'Markdown',
@@ -391,7 +391,7 @@ bot.onText(/📖 حديث عشوائي/, async (msg) => {
   const chatId = msg.chat.id;
   try {
     const waitMsg = await bot.sendMessage(chatId, '🔄 جاري جلب الحديث...');
-    const response = await axios.get('http://localhost:3000/api/random');
+    const response = await axios.get(API_URL + '/api/random');
     const msgBlock = formatHadithMsg(response.data);
     const options = {
       parse_mode: 'Markdown',
@@ -410,7 +410,7 @@ bot.onText(/♻️ حديث الفترة/, async (msg) => {
   const chatId = msg.chat.id;
   try {
     const waitMsg = await bot.sendMessage(chatId, '🔄 جاري جلب حديث الفترة...');
-    const response = await axios.get('http://localhost:3000/api/periodic');
+    const response = await axios.get(API_URL + '/api/periodic');
     const msgBlock = `📣 *تذكير بحديث الفترة!*\n\n` + formatHadithMsg(response.data);
     const options = {
       parse_mode: 'Markdown',
@@ -429,7 +429,7 @@ bot.onText(/♻️ حديث الفترة/, async (msg) => {
 setInterval(async () => {
   console.log('\n⏰ بدء البث التلقائي إلى القنوات...');
   await broadcastToAllChannels(false);
-}, 5 * 60 * 60 * 1000); // كل 5 ساعات
+}, 30 * 60 * 1000); 
 
 // ========== بث تلقائي للمستخدمين كل 3 ساعات ==========
 setInterval(async () => {
@@ -438,7 +438,7 @@ setInterval(async () => {
   console.log(`\n🚀 بث تلقائي لـ ${usersList.size} مستخدم...`);
   
   try {
-    const response = await axios.get('http://localhost:3000/api/random');
+    const response = await axios.get(API_URL + '/api/random');
     const msgBlock = `📣 *حديث الفترة (بث تلقائي)*\n\n` + formatHadithMsg(response.data);
     const options = {
       parse_mode: 'Markdown',
