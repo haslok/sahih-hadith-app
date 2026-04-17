@@ -1,494 +1,584 @@
 import TelegramBot from 'node-telegram-bot-api';
 import dotenv from 'dotenv';
 import axios from 'axios';
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 dotenv.config();
-const API_URL = 'https://sahih-hadith-app.vercel.app';
+
+const API_URL = process.env.API_URL || 'https://sahih-hadith-app.vercel.app';
 const token = process.env.BOT_TOKEN;
-const DEVELOPER_ID = 8236813471;
-
-// ========== إعدادات القنوات ==========
-// أضف معرفات القنوات هنا (يمكنك إضافة عدة قنوات)
-const CHANNELS = {
-  MAIN: '@ta_w_hid_11',     // قناة رئيسية - غيرها إلى معرف قناتك
-  // SECONDARY: '@your_second_channel',   
-};
-
-// قائمة القنوات للبث التلقائي
-const CHANNELS_LIST = [
-  CHANNELS.MAIN,
-];
+const DEVELOPER_ID = parseInt(process.env.DEVELOPER_ID) || 8236813471;
 
 if (!token) {
-  console.error('❌ خطأ: لم يتم العثور على BOT_TOKEN في ملف .env');
-  process.exit(1);
+    console.error('❌ خطأ: لم يتم العثور على BOT_TOKEN');
+    process.exit(1);
 }
 
-// ========== إعدادات البوت ==========
 const bot = new TelegramBot(token, { 
-  polling: true,
-  pollingOptions: {
-    timeout: 30,
-    retryTimeout: 5000,
-    interval: 1000
-  },
-  request: {
-    timeout: 60000,
-    agentOptions: {
-      keepAlive: true,
-      keepAliveMsecs: 1000,
-      maxSockets: 10,
-      maxFreeSockets: 5
+    polling: true,
+    pollingOptions: {
+        timeout: 30,
+        retryTimeout: 5000
     }
-  }
 });
 
-// ========== تخزين المستخدمين ==========
-const usersList = new Map();
+// ========== قاعدة بيانات القنوات ==========
+class ChannelDatabase {
+    constructor() {
+        this.filePath = path.join(__dirname, 'channels.json');
+        this.channels = [];
+    }
 
-// ========== دالة تنسيق الحديث ==========
+    async init() {
+        await this.load();
+    }
+
+    async load() {
+        try {
+            const data = await fs.readFile(this.filePath, 'utf8');
+            this.channels = JSON.parse(data);
+            console.log(`📚 تم تحميل ${this.channels.length} قناة`);
+        } catch (error) {
+            this.channels = [];
+            await this.save();
+        }
+    }
+
+    async save() {
+        try {
+            const data = JSON.stringify(this.channels, null, 2);
+            await fs.writeFile(this.filePath, data, 'utf8');
+        } catch (error) {
+            console.error('❌ خطأ في حفظ القنوات:', error.message);
+        }
+    }
+
+    async addChannel(chatId, title, username, addedBy) {
+        const existing = this.channels.find(ch => ch.chatId === chatId);
+        if (existing) return false;
+        
+        this.channels.push({
+            chatId: String(chatId),
+            title: title || 'قناة بدون اسم',
+            username: username || null,
+            addedBy: addedBy,
+            addedAt: new Date().toISOString(),
+            isActive: true
+        });
+        await this.save();
+        return true;
+    }
+
+    async removeChannel(chatId) {
+        const index = this.channels.findIndex(ch => ch.chatId === String(chatId));
+        if (index === -1) return false;
+        this.channels.splice(index, 1);
+        await this.save();
+        return true;
+    }
+
+    getAllChannels() {
+        return this.channels.filter(ch => ch.isActive === true);
+    }
+
+    getUserChannels(userId) {
+        return this.channels.filter(ch => ch.addedBy === userId);
+    }
+
+    async channelExists(chatId) {
+        return this.channels.some(ch => ch.chatId === String(chatId));
+    }
+}
+
+// ========== قاعدة بيانات المستخدمين ==========
+class UserDatabase {
+    constructor() {
+        this.filePath = path.join(__dirname, 'users.json');
+        this.users = new Map();
+    }
+
+    async init() {
+        await this.load();
+    }
+
+    async load() {
+        try {
+            const data = await fs.readFile(this.filePath, 'utf8');
+            const parsed = JSON.parse(data);
+            this.users = new Map(Object.entries(parsed));
+        } catch (error) {
+            this.users = new Map();
+        }
+    }
+
+    async save() {
+        const obj = Object.fromEntries(this.users);
+        await fs.writeFile(this.filePath, JSON.stringify(obj, null, 2), 'utf8');
+    }
+
+    addUser(userId, userData) {
+        if (!this.users.has(String(userId))) {
+            this.users.set(String(userId), {
+                ...userData,
+                firstSeen: new Date().toISOString()
+            });
+        }
+        const user = this.users.get(String(userId));
+        user.lastActive = new Date().toISOString();
+        this.users.set(String(userId), user);
+    }
+
+    getStats() {
+        return this.users.size;
+    }
+}
+
+const channelDB = new ChannelDatabase();
+const userDB = new UserDatabase();
+
+// ========== دوال مساعدة ==========
+function escapeMarkdown(text) {
+    if (!text) return '';
+    return text.replace(/([_*\[\]()~`>#+-=|{}.!])/g, '\\$1');
+}
+
 function formatHadithMsg(hadith) {
-  let msg = `📖 *${hadith.title || 'حديث نبوي'}*\n\n`;
-  msg += `📝 *الحديث:*\n${hadith.hadeeth}\n\n`;
-  
-  if (hadith.explanation) {
-    msg += `💡 *الشرح:*\n${hadith.explanation}\n\n`;
-  }
-  
-  if (hadith.grade) {
-    msg += `⭐ *صحة الحديث:* ${hadith.grade}\n`;
-  }
-  if (hadith.reference) {
-    msg += `📜 *المصدر:* ${hadith.reference}\n`;
-  }
-  
-  return msg;
+    const title = escapeMarkdown(hadith.title || 'حديث نبوي');
+    const hadeeth = escapeMarkdown(hadith.hadeeth || '');
+    const explanation = hadith.explanation ? escapeMarkdown(hadith.explanation) : null;
+    const grade = hadith.grade ? escapeMarkdown(hadith.grade) : null;
+    const reference = hadith.reference ? escapeMarkdown(hadith.reference) : null;
+
+    let msg = `📖 *${title}*\n\n`;
+    msg += `📝 *الحديث:*\n${hadeeth}\n\n`;
+    if (explanation) msg += `💡 *الشرح:*\n${explanation}\n\n`;
+    if (grade) msg += `⭐ *صحة الحديث:* ${grade}\n`;
+    if (reference) msg += `📜 *المصدر:* ${reference}\n`;
+    return msg;
 }
 
-// ========== دوال الإرسال إلى القناة (جديد) ==========
-
-/**
- * إرسال رسالة إلى قناة محددة
- * @param {string} channelId - معرف القناة (@username أو -100...)
- * @param {string} message - نص الرسالة
- * @param {object} options - خيارات إضافية
- */
-async function sendToChannel(channelId, message, options = {}) {
-  try {
-    const defaultOptions = {
-      parse_mode: 'Markdown',
-      disable_web_page_preview: true
-    };
-    
-    const result = await bot.sendMessage(channelId, message, { ...defaultOptions, ...options });
-    console.log(`✅ تم الإرسال إلى القناة: ${channelId}`);
-    return result;
-  } catch (err) {
-    console.error(`❌ فشل الإرسال إلى القناة ${channelId}: ${err.message}`);
-    return null;
-  }
+async function sendToChannel(channelId, message) {
+    try {
+        await bot.sendMessage(channelId, message, {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true
+        });
+        console.log(`✅ أرسل إلى: ${channelId}`);
+        return true;
+    } catch (err) {
+        console.error(`❌ فشل الإرسال: ${err.message}`);
+        return false;
+    }
 }
 
-/**
- * إرسال حديث عشوائي إلى قناة
- * @param {string} channelId - معرف القناة
- * @param {boolean} isPeriodic - هل هو حديث الفترة؟
- */
 async function sendHadithToChannel(channelId, isPeriodic = false) {
-  try {
-    const endpoint = isPeriodic ? API_URL + '/api/periodic' : API_URL + '/api/random';
-    const response = await axios.get(endpoint);
-    
-    const prefix = isPeriodic ? '📣 *تذكير بحديث الفترة!*\n\n' : '🌟 *حديث اليوم* 🌟\n\n';
-    const msgBlock = prefix + formatHadithMsg(response.data);
-    
-    await sendToChannel(channelId, msgBlock);
-    return true;
-  } catch (err) {
-    console.error(`❌ خطأ في جلب الحديث للقناة: ${err.message}`);
-    return false;
-  }
+    try {
+        const endpoint = isPeriodic 
+            ? `${API_URL}/api/periodic` 
+            : `${API_URL}/api/random`;
+        
+        const response = await axios.get(endpoint, { timeout: 15000 });
+        const prefix = isPeriodic 
+            ? '📣 *تذكير بحديث الفترة!*\n\n' 
+            : '🌟 *حديث اليوم* 🌟\n\n';
+        
+        return await sendToChannel(channelId, prefix + formatHadithMsg(response.data));
+    } catch (err) {
+        console.error(`❌ خطأ في جلب الحديث: ${err.message}`);
+        return false;
+    }
 }
 
-/**
- * بث حديث إلى جميع القنوات المسجلة
- * @param {boolean} isPeriodic - هل هو حديث الفترة؟
- */
-async function broadcastToAllChannels(isPeriodic = false) {
-  if (CHANNELS_LIST.length === 0) {
-    console.log('⚠️ لا توجد قنوات مضافة للإرسال');
-    return;
-  }
-  
-  console.log(`\n🚀 بدء البث إلى ${CHANNELS_LIST.length} قناة...`);
-  
-  let successCount = 0;
-  for (const channel of CHANNELS_LIST) {
-    const success = await sendHadithToChannel(channel, isPeriodic);
-    if (success) successCount++;
-    await new Promise(resolve => setTimeout(resolve, 1000)); // تأخير ثانية بين القنوات
-  }
-  
-  console.log(`✅ تم البث بنجاح إلى ${successCount}/${CHANNELS_LIST.length} قناة`);
-}
+// ========== أوامر البوت ==========
 
-// ========== حدث أول دخول للبوت ==========
-bot.on('my_chat_member', async (update) => {
-  const oldStatus = update.old_chat_member?.status;
-  const newStatus = update.new_chat_member?.status;
-  const userId = update.from.id;
-  const username = update.from.username || update.from.first_name;
-  const chatId = update.chat.id;
-  
-  if (oldStatus === 'left' && newStatus === 'member') {
-    const now = new Date();
-    
-    usersList.set(userId, {
-      username: username,
-      firstEntry: now,
-      lastActive: now,
-      fullName: update.from.first_name + (update.from.last_name ? ' ' + update.from.last_name : '')
-    });
-    
-    console.log(`\n👤 مستخدم جديد: ${update.from.first_name} (${userId})`);
-    
-    const options = {
-      reply_markup: {
-        keyboard: [
-          ['📖 حديث عشوائي', '♻️ حديث الفترة'],
-          ['ℹ️ معلومات', '📞 تواصل'],
-          ['❌ إغلاق']
-        ],
-        resize_keyboard: true,
-        one_time_keyboard: false
-      }
-    };
-    
-    await bot.sendMessage(chatId, 
-      `🎉 *مرحباً بك يا ${update.from.first_name}!* 🎉\n\n` +
-      `أنا بوت الأحاديث النبوية، اختر أحد الخيارات من القائمة 👇`,
-      { parse_mode: 'Markdown', ...options }
-    );
-  }
-  
-  if (oldStatus === 'kicked' && newStatus === 'member') {
-    console.log(`🔄 عودة: ${username} (${userId})`);
-    const options = {
-      reply_markup: {
-        keyboard: [
-          ['📖 حديث عشوائي', '♻️ حديث الفترة'],
-          ['ℹ️ معلومات', '📞 تواصل'],
-          ['❌ إغلاق']
-        ],
-        resize_keyboard: true
-      }
-    };
-    await bot.sendMessage(chatId, `👋 مرحباً بعودتك يا ${update.from.first_name}!`, options);
-  }
-});
-
-// ========== أمر /start ==========
+// بدء البوت
 bot.onText(/\/start/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const username = msg.from.username || msg.from.first_name;
-  
-  if (usersList.has(userId)) {
-    const userData = usersList.get(userId);
-    userData.lastActive = new Date();
-    usersList.set(userId, userData);
-    console.log(`🔄 عودة: ${username} (${userId})`);
-  } else {
-    usersList.set(userId, {
-      username: username,
-      firstEntry: new Date(),
-      lastActive: new Date(),
-      fullName: msg.from.first_name + (msg.from.last_name ? ' ' + msg.from.last_name : '')
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const firstName = msg.from.first_name || 'صديقي';
+    
+    userDB.addUser(userId, {
+        username: msg.from.username,
+        firstName: firstName
     });
-    console.log(`👤 جديد: ${username} (${userId})`);
-  }
+    
+    const welcomeMessage = `
+🎉 *مرحباً يا ${escapeMarkdown(firstName)}!* 🎉
 
-  const options = {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '📖 حديث عشوائي', callback_data: 'get_random_hadith' }],
-        [{ text: '♻️ حديث الفترة', callback_data: 'get_periodic_hadith' }],
-        [{ text: '📢 قناة البوت', url: 'https://t.me/ta_w_hid_11' }], 
-        [{ text: 'ℹ️ معلومات', callback_data: 'get_info' }],
-        [{ text: '📞 تواصل', callback_data: 'get_contact' }],
-        [{ text: '❌ إغلاق', callback_data: 'close_keyboard' }]
-      ]
-    }
-  };
-  
-  await bot.sendMessage(chatId, `مرحباً بك مجدداً ${msg.from.first_name}! 👋\nاختر من القائمة أدناه:`, options);
+🤖 *بوت صحيح - الأحاديث النبوية*
+
+📚 يمكنني إرسال الأحاديث إلى قناتك تلقائياً!
+
+*📢 طريقة الإضافة:*
+1️⃣ أضف البوت إلى قناتك كمشرف
+2️⃣ أرسل: \`/add -1001234567890\`
+
+*📋 الأوامر:*
+/start - بدء البوت
+/add - إضافة قناة
+/mychannels - قنواتك
+/remove - إزالة قناة
+/hadith - حديث عشوائي
+/periodic - حديث الفترة
+/stats - الإحصائيات (للمطور)
+    `;
+    
+    const options = {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '📖 حديث عشوائي', callback_data: 'hadith_random' }],
+                [{ text: '📣حديث الفترة', callback_data: 'hadith_periodic' }],
+                [{ text: '➕ إضافة قناة', callback_data: 'add_channel_btn' }],
+                [{ text: '📋 قنواتي', callback_data: 'my_channels_btn' }]
+            ]
+        }
+    };
+    
+    await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown', ...options });
 });
 
-// ========== أوامر المطور للتحكم بالقناة (جديد) ==========
-
-// أمر لإرسال حديث عشوائي إلى القناة
-bot.onText(/\/send_to_channel/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  
-  if (userId !== DEVELOPER_ID) {
-    await bot.sendMessage(chatId, '⛔ هذا الأمر مخصص للمطور فقط');
-    return;
-  }
-  
-  await bot.sendMessage(chatId, '🔄 جاري إرسال الحديث إلى القناة...');
-  const success = await sendHadithToChannel(CHANNELS.MAIN, false);
-  
-  if (success) {
-    await bot.sendMessage(chatId, '✅ تم إرسال الحديث إلى القناة بنجاح');
-  } else {
-    await bot.sendMessage(chatId, '❌ فشل إرسال الحديث إلى القناة');
-  }
-});
-
-// أمر لإرسال حديث الفترة إلى القناة
-bot.onText(/\/send_periodic_to_channel/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  
-  if (userId !== DEVELOPER_ID) {
-    await bot.sendMessage(chatId, '⛔ هذا الأمر مخصص للمطور فقط');
-    return;
-  }
-  
-  await bot.sendMessage(chatId, '🔄 جاري إرسال حديث الفترة إلى القناة...');
-  const success = await sendHadithToChannel(CHANNELS.MAIN, true);
-  
-  if (success) {
-    await bot.sendMessage(chatId, '✅ تم إرسال حديث الفترة إلى القناة');
-  } else {
-    await bot.sendMessage(chatId, '❌ فشل الإرسال');
-  }
-});
-
-// أمر لإرسال رسالة مخصصة إلى القناة
-bot.onText(/\/channel_msg (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const customMessage = match[1];
-  
-  if (userId !== DEVELOPER_ID) {
-    await bot.sendMessage(chatId, '⛔ هذا الأمر للمطور فقط');
-    return;
-  }
-  
-  await sendToChannel(CHANNELS.MAIN, customMessage);
-  await bot.sendMessage(chatId, '✅ تم إرسال الرسالة المخصصة إلى القناة');
-});
-
-// أمر لبث حديث لجميع القنوات
-bot.onText(/\/broadcast/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  
-  if (userId !== DEVELOPER_ID) {
-    await bot.sendMessage(chatId, '⛔ هذا الأمر للمطور فقط');
-    return;
-  }
-  
-  await bot.sendMessage(chatId, '🔄 جاري البث لجميع القنوات...');
-  await broadcastToAllChannels(false);
-  await bot.sendMessage(chatId, '✅ تم البث لجميع القنوات');
-});
-
-// ========== إحصائيات المستخدمين ==========
-bot.onText(/\/users/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  
-  if (userId === DEVELOPER_ID) {
-    if (usersList.size === 0) {
-      await bot.sendMessage(chatId, '📊 لا يوجد مستخدمين حتى الآن');
-      return;
+// إضافة قناة - الطريقة الجديدة
+bot.onText(/\/add (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const channelInput = match[1].trim();
+    
+    // التحقق من صحة المعرف
+    let channelId = channelInput;
+    let chatUsername = null;
+    
+    if (channelInput.startsWith('@')) {
+        channelId = channelInput;
+    } else if (channelInput.startsWith('-100')) {
+        channelId = channelInput;
+    } else {
+        await bot.sendMessage(chatId, 
+            '❌ *معرف القناة غير صحيح!*\n\n' +
+            'يجب أن يكون:\n' +
+            '• `-1001234567890` (رقمي)\n' +
+            '• `@channelusername` (عام)\n\n' +
+            'مثال: `/add -1001234567890`',
+            { parse_mode: 'Markdown' }
+        );
+        return;
     }
     
-    let statsMessage = `📊 *إحصائيات المستخدمين*\n\n👥 المجموع: ${usersList.size}\n\n`;
-    let counter = 1;
-    for (const [id, user] of usersList) {
-      statsMessage += `${counter}. ${user.fullName}\n   🆔 \`${id}\`\n`;
-      counter++;
-      if (counter > 20) break;
+    await bot.sendMessage(chatId, '🔄 جاري التحقق من القناة...');
+    
+    try {
+        let chat;
+        try {
+            chat = await bot.getChat(channelId);
+        } catch (err) {
+            await bot.sendMessage(chatId,
+                '❌ *لا يمكن الوصول للقناة!*\n\n' +
+                'تأكد من:\n' +
+                '1️⃣ البوت مضاف كمشرف\n' +
+                '2️⃣ المعرف صحيح (يبدأ بـ -100)\n' +
+                '3️⃣ البوت لديه صلاحية الإرسال',
+                { parse_mode: 'Markdown' }
+            );
+            return;
+        }
+        
+        const chatType = chat.type;
+        if (chatType !== 'channel') {
+            await bot.sendMessage(chatId, 
+                '❌ هذا ليس قناة!\n' +
+                'أرسل معرف قناة (يبدأ بـ -100)',
+                { parse_mode: 'Markdown' }
+            );
+            return;
+        }
+        
+        // التحقق من صلاحيات البوت
+        try {
+            const botMember = await bot.getChatMember(chat.id, bot.botInfo.id);
+            if (!botMember.can_post_messages) {
+                await bot.sendMessage(chatId,
+                    '❌ *لا توجد صلاحية الإرسال!*\n\n' +
+                    'تأكد أن البوت مشرف مع:\n' +
+                    '✓ إرسال الرسائل',
+                    { parse_mode: 'Markdown' }
+                );
+                return;
+            }
+        } catch (err) {
+            console.log('تحقق الصلاحيات:', err.message);
+        }
+        
+        const added = await channelDB.addChannel(
+            chat.id, 
+            chat.title, 
+            chat.username, 
+            userId
+        );
+        
+        if (added) {
+            await bot.sendMessage(chatId,
+                `✅ *تمت إضافة القناة!*\n\n` +
+                `📢 ${escapeMarkdown(chat.title)}\n` +
+                `🆔 \`${chat.id}\`\n\n` +
+                `⏰ البث كل 5 ساعات\n\n` +
+                `🔧 لإزالة:\n\`/remove ${chat.id}\``,
+                { parse_mode: 'Markdown' }
+            );
+            
+            // إرسال أول حديث
+            setTimeout(async () => {
+                await sendHadithToChannel(chat.id, false);
+            }, 2000);
+            
+            // إشعار للمطور
+            if (userId !== DEVELOPER_ID) {
+                bot.sendMessage(DEVELOPER_ID,
+                    `➕ *قناة جديدة*\n` +
+                    `📢 ${escapeMarkdown(chat.title)}\n` +
+                    `👤 ${escapeMarkdown(msg.from.first_name)}\n` +
+                    `🆔 \`${chat.id}\``,
+                    { parse_mode: 'Markdown' }
+                ).catch(() => {});
+            }
+        } else {
+            await bot.sendMessage(chatId, 'ℹ️ القناة مسجلة مسبقاً', { parse_mode: 'Markdown' });
+        }
+        
+    } catch (error) {
+        console.error('خطأ في إضافة القناة:', error);
+        await bot.sendMessage(chatId, '❌ حدث خطأ، حاول لاحقاً');
     }
-    
-    if (usersList.size > 20) statsMessage += `\n... و ${usersList.size - 20} مستخدم آخر`;
-    
-    await bot.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown' });
-  } else {
-    await bot.sendMessage(chatId, '⛔ هذا الأمر مخصص للمطور فقط');
-  }
 });
 
-// ========== معالجة الأزرار ==========
+// إزالة قناة
+bot.onText(/\/remove (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const channelId = match[1].trim();
+    
+    const userChannels = channelDB.getUserChannels(userId);
+    const isOwner = userChannels.some(ch => ch.chatId === channelId);
+    const isDev = userId === DEVELOPER_ID;
+    
+    if (!isOwner && !isDev) {
+        await bot.sendMessage(chatId, '❌ لا يمكنك إزالة هذه القناة', { parse_mode: 'Markdown' });
+        return;
+    }
+    
+    const removed = await channelDB.removeChannel(channelId);
+    
+    if (removed) {
+        await bot.sendMessage(chatId, '🗑️ *تم إزالة القناة*', { parse_mode: 'Markdown' });
+    } else {
+        await bot.sendMessage(chatId, '❌ القناة غير موجودة', { parse_mode: 'Markdown' });
+    }
+});
+
+// عرض قنوات المستخدم
+bot.onText(/\/mychannels/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    
+    const userChannels = channelDB.getUserChannels(userId);
+    const allChannels = channelDB.getAllChannels();
+    
+    // المستخدم يرى قنواته + المطور يرى كل القنوات
+    const channels = (userId === DEVELOPER_ID) ? allChannels : userChannels;
+    
+    if (channels.length === 0) {
+        await bot.sendMessage(chatId,
+            '📭 *ليس لديك قنوات*\n\n' +
+            'لإضافة:\n' +
+            '`/add -1001234567890`',
+            { parse_mode: 'Markdown' }
+        );
+        return;
+    }
+    
+    let message = `📋 *${userId === DEVELOPER_ID ? 'كل' : ''} القنوات (${channels.length})*\n\n`;
+    channels.forEach((ch, i) => {
+        message += `${i+1}. ${escapeMarkdown(ch.title)}\n`;
+        message += `   🆔: \`${ch.chatId}\`\n`;
+        message += `   📅: ${new Date(ch.addedAt).toLocaleDateString('ar-SA')}\n\n`;
+    });
+    
+    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+});
+
+// حديث عشوائي
+bot.onText(/\/hadith/, async (msg) => {
+    const chatId = msg.chat.id;
+    try {
+        const response = await axios.get(API_URL + '/api/random');
+        await bot.sendMessage(chatId, formatHadithMsg(response.data), {
+            parse_mode: 'Markdown'
+        });
+    } catch (err) {
+        bot.sendMessage(chatId, '❌ حدث خطأ في جلب الحديث');
+    }
+});
+
+// حديث الفترة
+bot.onText(/\/periodic/, async (msg) => {
+    const chatId = msg.chat.id;
+    try {
+        const response = await axios.get(API_URL + '/api/periodic');
+        await bot.sendMessage(chatId, '📣 *حديث الفترة*\n\n' + formatHadithMsg(response.data), {
+            parse_mode: 'Markdown'
+        });
+    } catch (err) {
+        bot.sendMessage(chatId, '❌ حدث خطأ');
+    }
+});
+
+// ========== معالج الأزرار ==========
 bot.on('callback_query', async (callbackQuery) => {
-  const message = callbackQuery.message;
-  const data = callbackQuery.data;
-  const chatId = message.chat.id;
-  
-  if (data === 'get_another_hadith' || data === 'get_random_hadith') {
-    try {
-      const waitMsg = await bot.sendMessage(chatId, '🔄 جاري جلب حديث...');
-      const response = await axios.get(API_URL + '/api/random');
-      const msgBlock = formatHadithMsg(response.data);
-      const options = {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [[{ text: '♻️ حديث آخر', callback_data: 'get_another_hadith' }]]
-        }
-      };
-      await bot.sendMessage(chatId, msgBlock, options);
-      bot.deleteMessage(chatId, waitMsg.message_id).catch(() => {});
-    } catch (err) {
-      bot.sendMessage(chatId, '❌ حدث خطأ في جلب الحديث');
-    }
-  } else if (data === 'get_periodic_hadith') {
-    try {
-      const waitMsg = await bot.sendMessage(chatId, '🔄 جاري جلب حديث الفترة...');
-      const response = await axios.get(API_URL + '/api/periodic');
-      const msgBlock = `📣 *تذكير بحديث الفترة!*\n\n` + formatHadithMsg(response.data);
-      const options = {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [[{ text: '♻️ حديث آخر', callback_data: 'get_another_hadith' }]]
-        }
-      };
-      await bot.sendMessage(chatId, msgBlock, options);
-      bot.deleteMessage(chatId, waitMsg.message_id).catch(() => {});
-    } catch (err) {
-      bot.sendMessage(chatId, '❌ حدث خطأ');
-    }
-  } else if (data === 'get_info') {
-    bot.sendMessage(chatId, '🤖 *بوت الأحاديث النبوية*\n\n📊 *المستخدمين:* ' + usersList.size, { parse_mode: 'Markdown' });
-  } else if (data === 'get_contact') {
-    bot.sendMessage(chatId, '📞 *للتواصل:* @ALFAHED_000', { parse_mode: 'Markdown' });
-  } else if (data === 'close_keyboard') {
-    bot.deleteMessage(chatId, message.message_id).catch(() => {});
-  }
-  
-  bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
-});
-
-// ========== أوامر النصوص ==========
-bot.onText(/📞 تواصل/, (msg) => {
-  bot.sendMessage(msg.chat.id, '📞 *للتواصل:* @ALFAHED_000', { parse_mode: 'Markdown' });
-});
-
-bot.onText(/ℹ️ معلومات/, (msg) => {
-  bot.sendMessage(msg.chat.id, '🤖 *بوت الأحاديث النبوية*\n\n📊 *المستخدمين:* ' + usersList.size, { parse_mode: 'Markdown' });
-});
-
-bot.onText(/❌ إغلاق/, (msg) => {
-  bot.sendMessage(msg.chat.id, 'تم إغلاق القائمة. أرسل /start لإظهارها', {
-    reply_markup: { remove_keyboard: true }
-  });
-});
-
-bot.onText(/📖 حديث عشوائي/, async (msg) => {
-  const chatId = msg.chat.id;
-  try {
-    const waitMsg = await bot.sendMessage(chatId, '🔄 جاري جلب الحديث...');
-    const response = await axios.get(API_URL + '/api/random');
-    const msgBlock = formatHadithMsg(response.data);
-    const options = {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [[{ text: '♻️ حديث آخر', callback_data: 'get_another_hadith' }]]
-      }
-    };
-    await bot.sendMessage(chatId, msgBlock, options);
-    bot.deleteMessage(chatId, waitMsg.message_id).catch(() => {});
-  } catch(e) {
-    bot.sendMessage(chatId, '❌ حدث خطأ');
-  }
-});
-
-bot.onText(/♻️ حديث الفترة/, async (msg) => {
-  const chatId = msg.chat.id;
-  try {
-    const waitMsg = await bot.sendMessage(chatId, '🔄 جاري جلب حديث الفترة...');
-    const response = await axios.get(API_URL + '/api/periodic');
-    const msgBlock = `📣 *تذكير بحديث الفترة!*\n\n` + formatHadithMsg(response.data);
-    const options = {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [[{ text: '♻️ حديث آخر', callback_data: 'get_another_hadith' }]]
-      }
-    };
-    await bot.sendMessage(chatId, msgBlock, options);
-    bot.deleteMessage(chatId, waitMsg.message_id).catch(() => {});
-  } catch(e) {
-    bot.sendMessage(chatId, '❌ حدث خطأ');
-  }
-});
-
-// ========== بث تلقائي إلى القنوات كل 5 ساعات (جديد) ==========
-setInterval(async () => {
-  console.log('\n⏰ بدء البث التلقائي إلى القنوات...');
-  await broadcastToAllChannels(false);
-}, 30 * 60 * 1000); 
-
-// ========== بث تلقائي للمستخدمين كل 3 ساعات ==========
-setInterval(async () => {
-  if (usersList.size === 0) return;
-  
-  console.log(`\n🚀 بث تلقائي لـ ${usersList.size} مستخدم...`);
-  
-  try {
-    const response = await axios.get(API_URL + '/api/random');
-    const msgBlock = `📣 *حديث الفترة (بث تلقائي)*\n\n` + formatHadithMsg(response.data);
-    const options = {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [[{ text: '♻️ حديث آخر', callback_data: 'get_another_hadith' }]]
-      }
-    };
+    const message = callbackQuery.message;
+    const data = callbackQuery.data;
+    const chatId = message.chat.id;
+    const userId = callbackQuery.from.id;
     
-    let success = 0;
-    for (const [userId] of usersList) {
-      try {
-        await bot.sendMessage(userId, msgBlock, options);
-        success++;
-        await new Promise(resolve => setTimeout(resolve, 100));
-      } catch (e) {
-        console.error(`❌ فشل الإرسال للمستخدم ${userId}`);
-      }
+    await bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+    
+    try {
+        if (data === 'hadith_random') {
+            const response = await axios.get(API_URL + '/api/random');
+            await bot.sendMessage(chatId, formatHadithMsg(response.data), {
+                parse_mode: 'Markdown'
+            });
+        }
+        else if (data === 'hadith_periodic') {
+            const response = await axios.get(API_URL + '/api/periodic');
+            await bot.sendMessage(chatId, '📣 *حديث الفترة*\n\n' + formatHadithMsg(response.data), {
+                parse_mode: 'Markdown'
+            });
+        }
+        else if (data === 'add_channel_btn') {
+            bot.sendMessage(chatId,
+                '➕ *إضافة قناة:*\n\n' +
+                'أرسل معرف القناة:\n`/add -1001234567890`\n\n' +
+                'أو استخدم @username:\n`/add @channelname`',
+                { parse_mode: 'Markdown' }
+            );
+        }
+        else if (data === 'my_channels_btn') {
+            const channels = userId === DEVELOPER_ID 
+                ? channelDB.getAllChannels() 
+                : channelDB.getUserChannels(userId);
+            
+            if (channels.length === 0) {
+                bot.sendMessage(chatId, '📭 لا توجد قنوات');
+            } else {
+                let msg = '📋 *القنوات:*\n\n';
+                channels.forEach((ch, i) => {
+                    msg += `${i+1}. ${escapeMarkdown(ch.title)}\n`;
+                    msg += `\`${ch.chatId}\`\n\n`;
+                });
+                bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+            }
+        }
+    } catch (err) {
+        bot.sendMessage(chatId, '❌ حدث خطأ');
+    }
+});
+
+// ========== أوامر المطور ==========
+bot.onText(/\/stats/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    
+    if (userId !== DEVELOPER_ID) {
+        await bot.sendMessage(chatId, '⛔ للمطور فقط');
+        return;
     }
     
-    console.log(`✅ تم البث لـ ${success} مستخدم`);
-  } catch (err) {
-    console.error('❌ خطأ في البث:', err.message);
-  }
-}, 3 * 60 * 60 * 1000); // كل 3 ساعات
+    const allChannels = channelDB.getAllChannels();
+    const stats = `📊 *إحصائيات البوت*\n\n` +
+                  `👥 المستخدمين: ${userDB.getStats()}\n` +
+                  `📢 القنوات: ${allChannels.length}`;
+    
+    await bot.sendMessage(chatId, stats, { parse_mode: 'Markdown' });
+});
 
-// ========== معالجة الأخطاء ==========
+// إرسال حديث للقناة
+bot.onText(/\/send (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    
+    if (userId !== DEVELOPER_ID) {
+        await bot.sendMessage(chatId, '⛔ للمطور فقط');
+        return;
+    }
+    
+    const channelId = match[1].trim();
+    await bot.sendMessage(chatId, '🔄 جاري الإرسال...');
+    
+    const success = await sendHadithToChannel(channelId, false);
+    
+    if (success) {
+        await bot.sendMessage(chatId, '✅ تم الإرسال');
+    } else {
+        await bot.sendMessage(chatId, '❌ فشل الإرسال');
+    }
+});
+
+// ========== البث التلقائي ==========
+setInterval(async () => {
+    console.log('\n⏰ بدء البث التلقائي...');
+    const channels = channelDB.getAllChannels();
+    
+    for (const channel of channels) {
+        const success = await sendHadithToChannel(channel.chatId, false);
+        if (success) {
+            console.log(`✅ أرسل إلى ${channel.title}`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    console.log(`✅ انتهى البث لـ ${channels.length} قناة`);
+}, 5 * 60 * 60 * 1000);
+
+// حفظ بيانات كل دقيقة
+setInterval(async () => {
+    try {
+        await userDB.save();
+    } catch (err) {}
+}, 60000);
+
+// إحصائيات كل ساعة
+setInterval(() => {
+    console.log(`📊 ${userDB.getStats()} مستخدم | ${channelDB.getAllChannels().length} قناة`);
+}, 3600000);
+
+// معالجة الأخطاء
 bot.on('polling_error', (error) => {
-  if (error.code !== 'EFATAL') return;
+    if (error.code !== 'EFATAL') {
+        console.error('Polling error:', error.message);
+    }
 });
 
 process.on('uncaughtException', (error) => {
-  if (error.code !== 'ECONNRESET') console.error('خطأ:', error.message);
+    if (error.code !== 'ECONNRESET') {
+        console.error('خطأ:', error.message);
+    }
 });
 
-process.on('unhandledRejection', (reason) => {
-  if (reason?.code !== 'ECONNRESET') console.error('خطأ غير معالج:', reason?.message);
-});
+// ========== بدء البوت ==========
+async function startBot() {
+    await channelDB.init();
+    await userDB.init();
+    
+    console.log(`
+╔════════════════════════════════════════╗
+║   🚀 البوت يعمل بنجاح                   ║
+║   📢 /add -100... لإضافة قناة          ║
+║   ⏰ بث تلقائي كل 5 ساعات             ║
+╚════════════════════════════════════════╝
+    `);
+}
 
-// ========== إحصائيات دورية ==========
-setInterval(() => {
-  console.log(`\n📊 إحصائيات: ${usersList.size} مستخدم | ${new Date().toLocaleString('ar-EG')}\n`);
-}, 3600000);
-
-console.log(`
-╔══════════════════════════════════════════╗
-║                                          ║
-║   🚀 البوت يعمل بنجاح                     ║
-║   👥 جاهز لاستقبال المستخدمين            ║
-║   📢 إرسال للقنوات: مفعل                 ║
-║   ⏰ بث تلقائي كل 5 ساعات للقنوات        ║
-║                                          ║
-╚══════════════════════════════════════════╝
-`);
+startBot();
