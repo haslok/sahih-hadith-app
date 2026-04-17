@@ -526,6 +526,67 @@ bot.onText(/\/send (.+)/, async (msg, match) => {
     }
 });
 
+// بث للأقناة
+bot.onText(/\/broadcast/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    
+    if (userId !== DEVELOPER_ID) {
+        await bot.sendMessage(chatId, '⛔ للمطور فقط');
+        return;
+    }
+    
+    const channels = channelDB.getAllChannels();
+    
+    if (channels.length === 0) {
+        await bot.sendMessage(chatId, '📭 لا توجد قنوات');
+        return;
+    }
+    
+    await bot.sendMessage(chatId, `🔄 جاري البث لـ ${channels.length} قناة...`);
+    
+    let successCount = 0;
+    for (const channel of channels) {
+        const success = await sendHadithToChannel(channel.chatId, false);
+        if (success) successCount++;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    await bot.sendMessage(chatId, `✅ تم البث لـ ${successCount}/${channels.length} قناة`);
+});
+
+// رسالة مخصصة للمحترقناة
+bot.onText(/\/msg (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    
+    if (userId !== DEVELOPER_ID) {
+        await bot.sendMessage(chatId, '⛔ للمطور فقط');
+        return;
+    }
+    
+    const message = match[1].trim();
+    const channels = channelDB.getAllChannels();
+    
+    if (channels.length === 0) {
+        await bot.sendMessage(chatId, '📭 لا توجد قنوات');
+        return;
+    }
+    
+    await bot.sendMessage(chatId, `🔄 جاري الإرسال لـ ${channels.length} قناة...`);
+    
+    let successCount = 0;
+    for (const channel of channels) {
+        try {
+            await sendToChannel(channel.chatId, message);
+            successCount++;
+        } catch (e) {}
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    await bot.sendMessage(chatId, `✅ تم الإرسال لـ ${successCount}/${channels.length} قناة`);
+});
+
 // ========== البث التلقائي ==========
 setInterval(async () => {
     console.log('\n⏰ بدء البث التلقائي...');
@@ -553,6 +614,38 @@ setInterval(async () => {
 setInterval(() => {
     console.log(`📊 ${userDB.getStats()} مستخدم | ${channelDB.getAllChannels().length} قناة`);
 }, 3600000);
+
+// إشعار دوري للمطور كل 6 ساعات
+setInterval(async () => {
+    if (!DEVELOPER_ID) return;
+    
+    const users = userDB.getStats();
+    const channels = channelDB.getAllChannels().length;
+    
+    try {
+        await bot.sendMessage(DEVELOPER_ID, 
+            `📊 *تقرير البوت - كل 6 ساعات*\n\n` +
+            `👥 المستخدمين: ${users}\n` +
+            `📢 القنوات: ${channels}\n` +
+            `⏰ ${new Date().toLocaleString('ar-SA')}`,
+            { parse_mode: 'Markdown' }
+        );
+    } catch (err) {}
+}, 6 * 60 * 60 * 1000);
+
+// إشعار للمطور عند إضافة قناة جديدة
+function notifyDeveloperOfNewChannel(channel, userName) {
+    if (!DEVELOPER_ID) return;
+    
+    bot.sendMessage(DEVELOPER_ID,
+        `➕ *قناة جديدة*\n\n` +
+        `📢 ${escapeMarkdown(channel.title)}\n` +
+        `👤 ${escapeMarkdown(userName)}\n` +
+        `🆔 \`${channel.chatId}\`\n` +
+        `📅 ${new Date().toLocaleString('ar-SA')}`,
+        { parse_mode: 'Markdown' }
+    ).catch(() => {});
+}
 
 // معالجة الأخطاء
 bot.on('polling_error', (error) => {
