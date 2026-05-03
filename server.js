@@ -2,6 +2,11 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import axios from 'axios';
+import 'node-fetch';
+import cors from 'cors';
+
+
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,6 +26,12 @@ const books = {
 
 app.use(express.json());
 app.use(express.static(__dirname));
+
+
+app.use(cors({
+    origin: "*"
+}));
+
 
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
@@ -64,7 +75,7 @@ async function fetchHadithDetails(hadithId) {
         const response = await axios.get('https://hadeethenc.com/api/v1/hadeeths/one', {
             params: { language: 'ar', id: hadithId },
             timeout: 10000
-        }); 
+        });
         return response.data;
     } catch (error) {
         console.error('Error fetching hadith details:', error.message);
@@ -90,16 +101,16 @@ app.get('/api/hadiths', async (req, res) => {
     const { bookId, page = 1, perPage = 20 } = req.query;
     const categories = await fetchCategories();
     const book = books[bookId];
-    
+
     if (!book) {
         return res.status(400).json({ error: 'الكتاب غير موجود' });
     }
-    
+
     const category = categories.find(c => c.api === book.api);
     if (!category) {
         return res.status(404).json({ error: 'القسم غير موجود' });
     }
-    
+
     const hadiths = await fetchHadithsFromCategory(category.id, parseInt(page), parseInt(perPage));
     res.json({ hadiths, total: hadiths.length, book: book.name });
 });
@@ -119,44 +130,52 @@ app.get('/api/random', async (req, res) => {
         if (categories.length === 0) {
             return res.status(404).json({ error: 'لا توجد أقسام' });
         }
-        
+
         const mainCategory = categories[Math.floor(Math.random() * Math.min(10, categories.length))];
         const hadiths = await fetchHadithsFromCategory(mainCategory.id, 1, 50);
-        
+
         if (hadiths.length === 0) {
             return res.status(404).json({ error: 'لا توجد أحاديث' });
         }
-        
+
         const randomHadith = hadiths[Math.floor(Math.random() * hadiths.length)];
         const details = await fetchHadithDetails(randomHadith.id);
-        
+
         res.json(details || randomHadith);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
+
 app.get('/api/search', async (req, res) => {
     const { q } = req.query;
+
     if (!q) return res.json({ results: [] });
-    
+
     try {
         const categories = await fetchCategories();
-        const allHadiths = [];
-        
-        for (let i = 0; i < Math.min(5, categories.length); i++) {
-            const hadiths = await fetchHadithsFromCategory(categories[i].id, 1, 30);
-            allHadiths.push(...hadiths);
+        const allResults = [];
+
+        for (const cat of categories.slice(0, 8)) {
+            const hadiths = await fetchHadithsFromCategory(cat.id, 1, 50);
+            
+            for (const h of hadiths) {
+                if (h.title && h.title.includes(q)) {
+                    const details = await fetchHadithDetails(h.id);
+                    if (details) {
+                        allResults.push(details);
+                    }
+                }
+                if (allResults.length >= 20) break;
+            }
+            if (allResults.length >= 20) break;
         }
-        
-        const results = allHadiths.filter(h => 
-            (h.hadeeth && h.hadeeth.toLowerCase().includes(q.toLowerCase())) ||
-            (h.narrator && h.narrator.toLowerCase().includes(q.toLowerCase()))
-        );
-        
-        res.json({ results: results.slice(0, 20) });
+
+        res.json({ results: allResults });
     } catch (error) {
-        res.json({ results: [] });
+        console.error('Search error:', error.message);
+        res.status(500).json({ results: [], error: error.message });
     }
 });
 
@@ -191,21 +210,21 @@ async function updatePeriodicHadith() {
     try {
         const categories = await fetchCategories();
         if (categories.length === 0) return;
-        
+
         let attempts = 0;
         let randomHadith = null;
         let details = null;
-        
-        while(attempts < 10 && !details) {
+
+        while (attempts < 10 && !details) {
             attempts++;
             const mainCategory = categories[Math.floor(Math.random() * Math.min(10, categories.length))];
             const hadiths = await fetchHadithsFromCategory(mainCategory.id, 1, 50);
-            if(hadiths.length > 0) {
+            if (hadiths.length > 0) {
                 randomHadith = hadiths[Math.floor(Math.random() * hadiths.length)];
                 details = await fetchHadithDetails(randomHadith.id);
             }
         }
-        
+
         if (details || randomHadith) {
             periodicHadith = details || randomHadith;
             console.log(`\n🔄 تم تحديث حديث الـ 5 ساعات: ${periodicHadith.title || 'حديث جديد'}\n`);
